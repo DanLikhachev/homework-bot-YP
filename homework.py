@@ -70,7 +70,9 @@ def get_api_answer(timestamp):
         raise ConnectionError(f"Ошибка соединения с API: {error}")
 
     if response.status_code != HTTPStatus.OK:
-        raise RuntimeError(f"Эндпоинт недоступен. Код ответа: {response.status_code}")
+        raise RuntimeError(
+            f"Эндпоинт недоступен. Код ответа: {response.status_code}"
+        )
 
     return response.json()
 
