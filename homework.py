@@ -1,3 +1,4 @@
+import sys
 import logging
 import os
 import time
@@ -5,15 +6,17 @@ from http import HTTPStatus
 
 import requests
 from dotenv import load_dotenv
-from telebot import TeleBot
+from telebot import TeleBot, apihelper
+
+
+load_dotenv()
 
 logging.basicConfig(
     level=logging.DEBUG,
     filename="program.log",
 )
-logger = logging.getLogger(__name__)
 
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 PRACTICUM_TOKEN = os.getenv("PRACTICUM_TOKEN")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -29,11 +32,15 @@ HOMEWORK_VERDICTS = {
     "rejected": "Работа проверена: у ревьюера есть замечания.",
 }
 
+sent_homework_statuses = {}
 
-class TokenError(Exception):
+
+class TelegramConnectionError(Exception):
     """Ошибка отсутствия токенов."""
 
-    pass
+
+class TelegramRuntimeError(Exception):
+    """Ошибка соединения с API."""
 
 
 def check_tokens():
@@ -45,7 +52,7 @@ def check_tokens():
     }
     missing_tokens = [name for name, value in tokens.items() if not value]
     if missing_tokens:
-        logger.critical(f'Отсутствуют токен(ы): {", ".join(missing_tokens)}')
+        logger.critical(f"Отсутствуют токен(ы): {", ".join(missing_tokens)}")
         return False
     return True
 
@@ -54,11 +61,12 @@ def send_message(bot, message):
     """Отправка сообщения в Telegram чат."""
     try:
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-        logger.debug(f"Сообщение отправлено: {message}")
-        return True
-    except Exception as error:
+    except apihelper.ApiException as error:
         logger.error(f"Сообщение не отправлено: {error}")
-        return False
+    except requests.RequestException as error:
+        logger.error(f"Сообщение не отправлено: {error}")
+    else:
+        logger.debug(f"Сообщение отправлено: {message}")
 
 
 def get_api_answer(timestamp):
@@ -96,13 +104,16 @@ def check_response(response):
 def parse_status(homework):
     """Извлечение статуса домашней работы."""
     if "homework_name" not in homework:
-        raise KeyError('В ответе нет "homework_name"')
+        raise KeyError('В ответе нет ключа "homework_name"')
+
+    if "status" not in homework:
+        raise KeyError('В ответе нет ключа "status"')
 
     homework_name = homework["homework_name"]
-    status = homework.get("status")
+    status = homework["status"]
 
     if status not in HOMEWORK_VERDICTS:
-        raise ValueError(f"Ошибка статуса: {status}")
+        raise ValueError(f"Неизвестный статус работы: {status}")
 
     verdict = HOMEWORK_VERDICTS[status]
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
@@ -112,7 +123,7 @@ def main():
     """Основная логика работы бота."""
     if not check_tokens():
         logger.critical("Токен(ы) отсутствуют")
-        raise TokenError("Токен(ы) отсутствуют")
+        sys.exit()
 
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
@@ -122,11 +133,22 @@ def main():
         try:
             response = get_api_answer(timestamp)
             homeworks = check_response(response)
-
             if homeworks:
                 message = parse_status(homeworks[0])
+                homework_id = homeworks[0].get('id')
+
+                if (homework_id
+                    and homework_id in sent_homework_statuses
+                    and sent_homework_statuses[homework_id] == message
+                ):
+                    logger.debug(f"{homework_id} уже был")
+                    timestamp = response.get('current_date', timestamp)
+                    continue
+                
                 if send_message(bot, message):
-                    timestamp = response.get("current_date", timestamp)
+                    timestamp = response.get('current_date', timestamp)
+                    sent_homework_statuses[homework_id] = message
+
             else:
                 logger.debug("Новых статусов нет")
 
